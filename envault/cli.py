@@ -1,14 +1,16 @@
 """CLI entry point for envault."""
 
 import click
+
+from envault.config import Config, ConfigError
+from envault.crypto import generate_key
 from envault.vault import Vault, VaultError
 from envault.sync import SyncManager, SyncError
-from envault.crypto import generate_key
 
 
 @click.group()
 def cli():
-    """envault — Encrypt and sync .env files across your team."""
+    """envault — encrypt and sync .env files across your team."""
     pass
 
 
@@ -17,64 +19,83 @@ def keygen():
     """Generate a new shared encryption key."""
     key = generate_key()
     click.echo(f"Generated key: {key}")
-    click.echo("Share this key securely with your team members.")
+    click.echo("Share this key securely with your team.")
+
+
+@cli.command(name="init")
+@click.option("--env-file", default=".env", show_default=True, help="Path to the .env file.")
+@click.option("--vault-file", default=".env.vault", show_default=True, help="Path to the vault file.")
+@click.option("--shared-dir", default="", help="Shared directory for vault sync.")
+def init_cmd(env_file, vault_file, shared_dir):
+    """Initialise envault configuration in the current directory."""
+    try:
+        config = Config()
+        config.init(env_file=env_file, vault_file=vault_file, shared_dir=shared_dir)
+        click.echo(f"Initialised envault config at .envault.json")
+    except ConfigError as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1)
 
 
 @cli.command()
-@click.argument("env_file", default=".env")
-@click.option("--key", required=True, envvar="ENVAULT_KEY", help="Shared encryption key.")
-@click.option("--output", default=None, help="Output vault file path.")
-def lock(env_file, key, output):
-    """Encrypt a .env file into a vault."""
+@click.argument("key")
+@click.option("--config-dir", default=".", hidden=True)
+def lock(key, config_dir):
+    """Encrypt the .env file into the vault."""
     try:
-        vault = Vault()
-        result = vault.lock(env_file, key)
-        click.echo(f"Locked: {result}")
-    except VaultError as e:
-        raise click.ClickException(str(e))
+        config = Config(project_dir=config_dir).load()
+        vault = Vault(key, env_path=config.env_file, vault_path=config.vault_file)
+        vault.lock()
+        click.echo(f"Locked {config.env_file} → {config.vault_file}")
+    except (ConfigError, VaultError) as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1)
 
 
 @cli.command()
-@click.argument("vault_file", default=".env.vault")
-@click.option("--key", required=True, envvar="ENVAULT_KEY", help="Shared encryption key.")
-@click.option("--output", default=None, help="Output .env file path.")
-def unlock(vault_file, key, output):
-    """Decrypt a vault file into a .env file."""
+@click.argument("key")
+@click.option("--config-dir", default=".", hidden=True)
+def unlock(key, config_dir):
+    """Decrypt the vault file into .env."""
     try:
-        vault = Vault()
-        result = vault.unlock(vault_file, key, output)
-        click.echo(f"Unlocked: {result}")
-    except VaultError as e:
-        raise click.ClickException(str(e))
+        config = Config(project_dir=config_dir).load()
+        vault = Vault(key, env_path=config.env_file, vault_path=config.vault_file)
+        vault.unlock()
+        click.echo(f"Unlocked {config.vault_file} → {config.env_file}")
+    except (ConfigError, VaultError) as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1)
 
 
 @cli.command()
-@click.argument("env_file", default=".env")
-@click.option("--key", required=True, envvar="ENVAULT_KEY", help="Shared encryption key.")
-@click.option("--shared-dir", required=True, envvar="ENVAULT_SHARED_DIR", help="Shared directory path.")
-def push(env_file, key, shared_dir):
-    """Encrypt and push .env to a shared directory."""
+@click.argument("key")
+@click.option("--config-dir", default=".", hidden=True)
+def push(key, config_dir):
+    """Lock and push the vault to the shared directory."""
     try:
-        vault = Vault()
-        manager = SyncManager(shared_dir, vault)
-        dest = manager.push(env_file, key)
-        click.echo(f"Pushed vault to: {dest}")
-    except (VaultError, SyncError) as e:
-        raise click.ClickException(str(e))
+        config = Config(project_dir=config_dir).load()
+        vault = Vault(key, env_path=config.env_file, vault_path=config.vault_file)
+        vault.lock()
+        manager = SyncManager(key, shared_dir=config.shared_dir, vault_path=config.vault_file)
+        manager.push()
+        click.echo("Vault pushed to shared directory.")
+    except (ConfigError, VaultError, SyncError) as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1)
 
 
 @cli.command()
-@click.option("--key", required=True, envvar="ENVAULT_KEY", help="Shared encryption key.")
-@click.option("--shared-dir", required=True, envvar="ENVAULT_SHARED_DIR", help="Shared directory path.")
-@click.option("--output", default=None, help="Output .env file path.")
-def pull(key, shared_dir, output):
-    """Pull and decrypt .env from a shared directory."""
+@click.argument("key")
+@click.option("--config-dir", default=".", hidden=True)
+def pull(key, config_dir):
+    """Pull the vault from the shared directory and unlock."""
     try:
-        vault = Vault()
-        manager = SyncManager(shared_dir, vault)
-        if manager.is_outdated():
-            click.echo("Remote vault has changes. Pulling...")
-        result = manager.pull(key, output)
-        click.echo(f"Pulled and unlocked: {result}")
-    except (VaultError, SyncError) as e:
-        raise click.ClickException(str(e))
+        config = Config(project_dir=config_dir).load()
+        manager = SyncManager(key, shared_dir=config.shared_dir, vault_path=config.vault_file)
+        manager.pull()
+        vault = Vault(key, env_path=config.env_file, vault_path=config.vault_file)
+        vault.unlock()
+        click.echo("Vault pulled and unlocked.")
+    except (ConfigError, VaultError, SyncError) as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1)
